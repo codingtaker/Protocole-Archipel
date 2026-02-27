@@ -1,6 +1,7 @@
 
 const assert = require("assert");
 const crypto = require("crypto");
+const sodium = require("libsodium-wrappers");
 
 const { initKeys, getPublicKey } = require("../src/crypto/keys");
 const { buildPacket, parsePacket, extractPackets } = require("../src/protocol/packet");
@@ -25,16 +26,18 @@ async function runTests() {
   await initKeys();
 
   // ✅ Test 1 — clé publique longueur correcte
-  const pubKey = getPublicKey();
-  assert.strictEqual(pubKey.length, 32, "❌ Clé publique doit faire 32 bytes");
-  console.log("✔ Clé publique valide (32 bytes)");
+    const pubKey = getPublicKey();
+    assert.strictEqual(pubKey.length, 32, "❌ Clé publique doit faire 32 bytes");
+    console.log("✔ Clé publique valide (32 bytes)");
 
   // ✅ Test 2 — Construction paquet
-  const payload = Buffer.from("Hello Archipel");
-  const packet = buildPacket(0x01, payload);
+    await sodium.ready;
 
-  assert.ok(packet.length > 73, "❌ Packet trop court");
-  console.log("✔ Packet construit");
+    const payload = Buffer.from("Hello Archipel");
+    const packet = buildPacket(0x01, payload, Buffer.from("Signed"));
+
+    assert.ok(packet.length > 73, "❌ Packet trop court");
+    console.log("✔ Packet construit");
 
   // ✅ Test 3 — Parsing correct
   const parsed = parsePacket(packet);
@@ -53,16 +56,16 @@ async function runTests() {
 
   console.log("✔ HMAC valide");
 
-  // ✅ Test 5 — Détection corruption
-  const tampered = Buffer.from(packet);
-  tampered[10] = 0x00;
+    // ✅ Test 5 — Détection corruption
+    const tampered = Buffer.from(packet);
+    tampered[10] = 0x00;
 
-  const tamperedValid = verifyHmac(tampered);
-  assert.strictEqual(tamperedValid, false, "❌ Corruption non détectée");
+    const tamperedValid = verifyHmac(tampered);
+    assert.strictEqual(tamperedValid, false, "❌ Corruption non détectée");
 
-  console.log("✔ Corruption détectée correctement");
+    console.log("✔ Corruption détectée correctement");
 
-  // Test 6 — Fragmentation TCP
+    // Test 6 — Fragmentation TCP
     const payload2 = Buffer.from("Boundary Test");
     const packet2 = buildPacket(0x01, payload2);
 
@@ -102,6 +105,18 @@ async function runTests() {
     assert.strictEqual(result4.packets.length, 0, "❌ Longueur invalide doit être rejetée");
 
     console.log("✔ Protection longueur invalide OK");
+
+    // Test 9 — Signature Ed25519
+    const body = packet.slice(0, packet.length - 96); 
+
+    const isValidSig = sodium.crypto_sign_verify_detached(
+    parsed.signature,
+    body,
+    parsed.nodeId
+    );
+
+    assert.strictEqual(isValidSig, true, "❌ Signature invalide");
+    console.log("✔ Signature Ed25519 valide");
 
   console.log("\n🎉 Tous les tests Sprint 0 sont PASSÉS !");
 }

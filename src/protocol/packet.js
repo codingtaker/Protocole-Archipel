@@ -1,6 +1,26 @@
 const crypto = require("crypto");
 const { MAGIC, HMAC_SECRET } = require("../config");
-const { getPublicKey } = require("../crypto/keys");
+const { getPublicKey, sign } = require("../crypto/keys");
+const sodium = require("libsodium-wrappers");
+
+
+async function verifySignature(packet) {
+  await sodium.ready;
+
+  const body = Buffer.concat([
+    Buffer.from("ARCH"),
+    Buffer.from([packet.type]),
+    packet.nodeId,
+    (function(){ const b=Buffer.alloc(4); b.writeUInt32BE(packet.payloadLen,0); return b })(),
+    packet.payload
+  ]);
+
+  return sodium.crypto_sign_verify_detached(
+    packet.signature,
+    body,
+    packet.nodeId
+  );
+}
 
 function buildPacket(type, payloadBuffer) {
   if (!Buffer.isBuffer(payloadBuffer)) {
@@ -8,26 +28,29 @@ function buildPacket(type, payloadBuffer) {
   }
 
   const nodeId = getPublicKey();
+
   const payloadLen = Buffer.alloc(4);
   payloadLen.writeUInt32BE(payloadBuffer.length, 0);
 
   const header = Buffer.concat([
-    MAGIC,                 // 4 bytes
-    Buffer.from([type]),   // 1 byte
-    nodeId,                // 32 bytes
-    payloadLen             // 4 bytes
+    MAGIC,
+    Buffer.from([type]),
+    nodeId,
+    payloadLen
   ]);
 
   const body = Buffer.concat([header, payloadBuffer]);
 
-  // HMAC-SHA256 (Sprint 0 spec)
-  if (!HMAC_SECRET) {
-    throw new Error("HMAC_SECRET is not set. Set it via environment variable.");
-  }
+  // 🔐 Signature Ed25519 sur HEADER + PAYLOAD
+  const signature = sign(body); // 64 bytes
 
-  const hmac = crypto.createHmac("sha256", HMAC_SECRET).update(body).digest();
+  const signedBody = Buffer.concat([body, signature]);
 
-  return Buffer.concat([body, hmac]);
+  // 🔒 HMAC sur tout sauf HMAC lui-même
+  const hmacKey = typeof HMAC_SECRET !== 'undefined' && HMAC_SECRET ? HMAC_SECRET : 'archipel-secret-temp';
+  const hmac = crypto.createHmac("sha256", hmacKey).update(signedBody).digest();
+
+  return Buffer.concat([signedBody, hmac]);
 }
 
 function parsePacket(buffer) {
@@ -35,8 +58,18 @@ function parsePacket(buffer) {
   const type = buffer.readUInt8(4);
   const nodeId = buffer.slice(5, 37);
   const payloadLen = buffer.readUInt32BE(37);
-  const payload = buffer.slice(41, 41 + payloadLen);
-  const hmac = buffer.slice(41 + payloadLen);
+
+  const payloadStart = 41;
+  const payloadEnd = payloadStart + payloadLen;
+
+  const payload = buffer.slice(payloadStart, payloadEnd);
+
+  const signatureStart = payloadEnd;
+  const signatureEnd = signatureStart + 64;
+
+  const signature = buffer.slice(signatureStart, signatureEnd);
+
+  const hmac = buffer.slice(signatureEnd);
 
   return {
     magic,
@@ -44,18 +77,16 @@ function parsePacket(buffer) {
     nodeId,
     payloadLen,
     payload,
-    hmac,
+    signature,
+    hmac
   };
 }
 
 function verifyPacket(buffer) {
   const body = buffer.slice(0, buffer.length - 32);
   const receivedHmac = buffer.slice(buffer.length - 32);
-
-  const computedHmac = crypto
-    .createHmac("sha256", "archipel-secret-temp")
-    .update(body)
-    .digest();
+  const hmacKey = typeof HMAC_SECRET !== 'undefined' && HMAC_SECRET ? HMAC_SECRET : 'archipel-secret-temp';
+  const computedHmac = crypto.createHmac("sha256", hmacKey).update(body).digest();
 
   return crypto.timingSafeEqual(receivedHmac, computedHmac);
 }
@@ -66,7 +97,9 @@ function extractPackets(buffer) {
 
   while (offset + 41 <= buffer.length) {
     const payloadLen = buffer.readUInt32BE(offset + 37);
-    const totalLength = 41 + payloadLen + 32;
+    const signatureLen = 64;
+    const hmacLen = 32;
+    const totalLength = 41 + payloadLen + signatureLen + hmacLen;
 
     if (offset + totalLength > buffer.length) {
       break; // packet incomplet
