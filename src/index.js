@@ -5,7 +5,7 @@ const { buildPacket, parsePacket } = require("./protocol/packet");
 async function main() {
   await initKeys();
 
-  console.log("🚀 Archipel Sprint 0 initialisé");
+  console.log("Archipel Sprint 0 initialisé");
 
   const payload = Buffer.from("Hello Archipel");
   const packet = buildPacket(0x01, payload); // HELLO

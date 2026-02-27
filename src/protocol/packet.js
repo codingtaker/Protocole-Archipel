@@ -48,7 +48,45 @@ function parsePacket(buffer) {
   };
 }
 
+function verifyPacket(buffer) {
+  const body = buffer.slice(0, buffer.length - 32);
+  const receivedHmac = buffer.slice(buffer.length - 32);
+
+  const computedHmac = crypto
+    .createHmac("sha256", "archipel-secret-temp")
+    .update(body)
+    .digest();
+
+  return crypto.timingSafeEqual(receivedHmac, computedHmac);
+}
+
+function extractPackets(buffer) {
+  const packets = [];
+  let offset = 0;
+
+  while (offset + 41 <= buffer.length) {
+    const payloadLen = buffer.readUInt32BE(offset + 37);
+    const totalLength = 41 + payloadLen + 32;
+
+    if (offset + totalLength > buffer.length) {
+      break; // packet incomplet
+    }
+
+    const packet = buffer.slice(offset, offset + totalLength);
+    packets.push(packet);
+
+    offset += totalLength;
+  }
+
+  return {
+    packets,
+    remaining: buffer.slice(offset)
+  };
+}
+
 module.exports = {
   buildPacket,
   parsePacket,
+  verifyPacket,
+  extractPackets,
 };
